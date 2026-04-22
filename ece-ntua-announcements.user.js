@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name          ece.ntua.gr announcements fix
-// @version       0.4
+// @version       0.5
 // @description   Highlight new posts using 3 colors and sort them based on date instead of this weird order they are in
 // @author        liuminex
 // @match         https://www.ece.ntua.gr/el/announcements
@@ -8,11 +8,91 @@
 // @grant         none
 // ==/UserScript==
 
+const LEGACY_BADGE_CLASS = 'ece-recent-announcement-badge';
+const ANNOUNCEMENT_INDICATOR_COLORS = {
+    today: 'rgb(152, 251, 152)',
+    yesterday: 'rgb(255, 218, 185)',
+    twoDaysAgo: 'rgb(255, 255, 153)',
+    default: 'rgb(25, 118, 210)'
+};
+
+function normalizeGreekMonth(monthText) {
+    return monthText
+        .trim()
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+}
+
+function resolveMonthNumber(monthText) {
+    const normalizedMonth = normalizeGreekMonth(monthText);
+
+    if (normalizedMonth.startsWith('ιαν')) return '01';
+    if (normalizedMonth.startsWith('φεβ')) return '02';
+    if (normalizedMonth.startsWith('μαρ')) return '03';
+    if (normalizedMonth.startsWith('απρ')) return '04';
+    if (normalizedMonth.startsWith('μαι')) return '05';
+    if (normalizedMonth.startsWith('ιουν')) return '06';
+    if (normalizedMonth.startsWith('ιουλ') || normalizedMonth === 'ιου') return '07';
+    if (normalizedMonth.startsWith('αυγ')) return '08';
+    if (normalizedMonth.startsWith('σεπ')) return '09';
+    if (normalizedMonth.startsWith('οκτ')) return '10';
+    if (normalizedMonth.startsWith('νοε')) return '11';
+    if (normalizedMonth.startsWith('δεκ')) return '12';
+
+    return null;
+}
+
+function removeLegacyBadge(titleElement) {
+    const existingBadge = titleElement.querySelector(`.${LEGACY_BADGE_CLASS}`);
+    if (existingBadge) {
+        existingBadge.remove();
+    }
+}
+
+function resolveAnnouncementIndicatorColor(formattedDate, todayStr, yesterdayStr, yesterday2Str) {
+    if (formattedDate === todayStr) {
+        return ANNOUNCEMENT_INDICATOR_COLORS.today;
+    }
+
+    if (formattedDate === yesterdayStr) {
+        return ANNOUNCEMENT_INDICATOR_COLORS.yesterday;
+    }
+
+    if (formattedDate === yesterday2Str) {
+        return ANNOUNCEMENT_INDICATOR_COLORS.twoDaysAgo;
+    }
+
+    return ANNOUNCEMENT_INDICATOR_COLORS.default;
+}
+
+function applyAnnouncementIndicatorColor(pinElement, pinStatus, indicatorColor) {
+    if (pinStatus === -1) {
+        return;
+    }
+
+    pinElement.style.setProperty('color', indicatorColor, 'important');
+    pinElement.style.setProperty('background', indicatorColor, 'important');
+    pinElement.style.setProperty('background-color', indicatorColor, 'important');
+    pinElement.style.setProperty('border-color', indicatorColor, 'important');
+    pinElement.style.setProperty('fill', indicatorColor, 'important');
+
+    const iconElement = pinElement.querySelector('svg');
+    if (iconElement) {
+        iconElement.style.setProperty('color', indicatorColor, 'important');
+        iconElement.style.setProperty('fill', indicatorColor, 'important');
+    }
+
+    const pathElements = pinElement.querySelectorAll('path');
+    for (const pathElement of pathElements) {
+        pathElement.style.setProperty('fill', indicatorColor, 'important');
+    }
+}
+
 function fixthem() {
     'use strict';
 
     setTimeout(() => {
-
         // find all elements with tag a and href /el/announcementDetails/*
         const a_els = document.querySelectorAll('a[href^="/el/announcementDetails/"]');
 
@@ -107,6 +187,8 @@ function fixthem() {
                 return;
             }
 
+            removeLegacyBadge(titleElement);
+
             const TEXT = titleElement.innerText;
 
             // date in inner text of last child of dataElement, but childs are either 1 or 2
@@ -139,45 +221,27 @@ function fixthem() {
 
             console.log("found date element:", dateText);
 
-
-            const monthsMap = {
-                "Ιαν": "01",
-                "Φεβ": "02",
-                "Μαρ": "03",
-                "Απρ": "04",
-                "Μαΐ": "05",
-                "Ιου": "06",
-                "Ιου": "07",
-                "Αυγ": "08",
-                "Σεπ": "09",
-                "Οκτ": "10",
-                "Νοε": "11",
-                "Δεκ": "12"
-            };
-
             let [day, monthGreek, year] = dateText.split(" ");
-            let month = monthsMap[monthGreek];
+            let month = resolveMonthNumber(monthGreek);
             day = String(day).padStart(2, '0');
 
+            if (!month || !year) {
+                console.error("Error 9: Unable to parse announcement date", dateText);
+                continue;
+            }
+
             const formattedDate = `${year}-${month}-${day}`;
+            const indicatorColor = resolveAnnouncementIndicatorColor(formattedDate, todayStr, yesterdayStr, yesterday2Str);
 
             console.log(`Parsed date: ${formattedDate} from "${dateText}"`);
-
-            let color = "white";
-            if (formattedDate.startsWith(todayStr)) {
-                color = "rgb(152, 251, 152)";
-            } else if (formattedDate.startsWith(yesterdayStr)) {
-                color = "rgb(255, 218, 185)";
-            } else if (formattedDate.startsWith(yesterday2Str)) {
-                color = "rgb(255, 255, 153)";
-            }
 
             announcements.push({
                 date: formattedDate,
                 text: TEXT,
                 pinned: pin_status,
-                color: color,
-                href: r.href
+                element: r,
+                pinElement: pinElement,
+                indicatorColor: indicatorColor
             });
         }
 
@@ -185,31 +249,9 @@ function fixthem() {
             return new Date(b.date) - new Date(a.date);
         });
 
-        container.innerHTML = "";
-
-        for (const ann of announcements){
-            let pintext = ""
-            if (ann.pinned === -1){
-                pintext = "font-weight: bold; color: red;";
-            }
-            else if (ann.pinned === 1){
-                pintext = "font-weight: bold;";
-            }
-
-            const new_html_a = `<a href="${ann.href}"
-                style="display: block; padding: 10px; border-bottom: 1px solid #ccc; text-decoration: none; color: inherit;
-                    background: ${ann.color}; ${pintext}
-                    font-family: Times New Roman, serif;
-                    "
-                >
-            
-            <span style="font-size: 0.8em; color: gray; margin-bottom: 5px;">${ann.date}</span>
-            <span style="font-size: 1em;">${ann.text}</span>
-            
-            
-            
-            </a>`;
-            container.innerHTML += new_html_a;
+        for (const ann of announcements) {
+            applyAnnouncementIndicatorColor(ann.pinElement, ann.pinned, ann.indicatorColor);
+            container.appendChild(ann.element);
         }
 
     }, 2000);
